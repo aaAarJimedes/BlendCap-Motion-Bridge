@@ -1,4 +1,4 @@
-"""Isolated Blender 5.1 integration regression for BlendCap Motion Bridge 0.3.0.
+"""Isolated Blender 5.1 integration regression for BlendCap Motion Bridge 0.4.0.
 
 This test source-imports the development add-on under ``--factory-startup``
 and supplies only the narrow BlendCap RNA/operator surface BlendCap Motion Bridge uses.
@@ -17,7 +17,7 @@ import bpy
 
 
 if not bpy.app.background:
-    raise RuntimeError("integration_030_factory.py is background-only")
+    raise RuntimeError("integration_040_factory.py is background-only")
 
 
 TEST_DIR = Path(__file__).resolve().parent
@@ -51,7 +51,7 @@ import blendcap_motion_bridge  # noqa: E402
 
 if Path(blendcap_motion_bridge.__file__).resolve().parent != PACKAGE_ROOT:
     raise RuntimeError(f"did not source-import development add-on: {blendcap_motion_bridge.__file__}")
-if tuple(blendcap_motion_bridge.bl_info["version"]) != (0, 3, 0):
+if tuple(blendcap_motion_bridge.bl_info["version"]) != (0, 4, 0):
     raise RuntimeError(f"unexpected add-on version: {blendcap_motion_bridge.bl_info['version']}")
 
 
@@ -114,6 +114,23 @@ class TEST_OT_blendcap_apply_retarget(bpy.types.Operator):
         action = bpy.data.actions.new(f"TEST_BlendCap_Output_{FAKE_BAKE['calls']}")
         animation_data = target.animation_data_create()
         blendcap_motion_bridge.operators._bind_action(animation_data, action)
+        slot = action.slots.new(id_type="OBJECT", name=target.name)
+        try:
+            action.slots.active = slot
+        except Exception:
+            slot.active = True
+        animation_data.action_slot = slot
+        waist = target.pose.bones["腰"]
+        waist.rotation_mode = "XYZ"
+        path = waist.path_from_id("rotation_euler")
+        fcurves = blendcap_motion_bridge.operators._ensure_fcurve_collection(
+            action, slot
+        )
+        fcurve = fcurves.new(path, index=2)
+        first_point = fcurve.keyframe_points.insert(1.0, 1.0)
+        first_point.interpolation = "LINEAR"
+        fcurve.keyframe_points.insert(10.0, 1.25)
+        fcurve.update()
         return {"FINISHED"}
 
 
@@ -297,6 +314,13 @@ def create_target(name: str = "MMD_Target") -> bpy.types.Object:
 
 def remove_test_data() -> None:
     scene = bpy.context.scene
+    if (
+        hasattr(scene, "blendcap_motion_bridge_preroll_pending")
+        and scene.blendcap_motion_bridge_preroll_pending
+    ):
+        blendcap_motion_bridge.operators._clear_preroll_state(
+            scene, restore_unbaked_cache=True
+        )
     if hasattr(scene, "blendcap_retarget_pairs"):
         scene.blendcap_retarget_pairs.clear()
         scene.blendcap_retarget_source = None
@@ -318,6 +342,15 @@ def remove_test_data() -> None:
         ("blendcap_motion_bridge_previous_state_available", False),
         ("blendcap_motion_bridge_previous_table_json", ""),
         ("blendcap_motion_bridge_last_output_action", ""),
+        ("blendcap_motion_bridge_preroll_enabled", True),
+        ("blendcap_motion_bridge_preroll_pose_source", "CURRENT"),
+        ("blendcap_motion_bridge_preroll_pose_action", None),
+        ("blendcap_motion_bridge_preroll_pose_frame", 1),
+        ("blendcap_motion_bridge_preroll_hold_frames", 8),
+        ("blendcap_motion_bridge_preroll_transition_frames", 22),
+        ("blendcap_motion_bridge_preroll_pending", False),
+        ("blendcap_motion_bridge_preroll_simulated", False),
+        ("blendcap_motion_bridge_preroll_cleanup_confirmed", False),
     ):
         if hasattr(scene, name):
             setattr(scene, name, value)
@@ -328,6 +361,9 @@ def remove_test_data() -> None:
     for data in tuple(bpy.data.armatures):
         if data.users == 0:
             bpy.data.armatures.remove(data)
+    for data in tuple(bpy.data.meshes):
+        if data.users == 0:
+            bpy.data.meshes.remove(data)
     FAKE_BAKE.update(
         calls=0,
         mode="plain",
@@ -509,6 +545,159 @@ def add_fk_constraints(target: bpy.types.Object) -> dict:
     }
 
 
+def test_preroll_pose_sources() -> dict:
+    remove_test_data()
+    target = create_target()
+    scene = bpy.context.scene
+    animation_data = target.animation_data_create()
+    baseline = bpy.data.actions.new("TEST_Pose_Source_Baseline")
+    baseline_slot = baseline.slots.new(id_type="OBJECT", name=target.name)
+    blendcap_motion_bridge.operators._bind_action(
+        animation_data, baseline, baseline_slot
+    )
+    animation_data.action_slot = baseline_slot
+    waist = target.pose.bones["腰"]
+    waist.rotation_mode = "XYZ"
+    path = waist.path_from_id("rotation_euler")
+
+    scene.frame_set(3)
+    waist.rotation_euler.z = 0.2
+    bpy.context.view_layer.update()
+    scene.blendcap_motion_bridge_preroll_pose_source = "CURRENT"
+    current = blendcap_motion_bridge.operators._sample_preroll_pose(
+        bpy.context, target
+    )
+    check(abs(current[path][2] - 0.2) < 1e-5, "current pose source was not sampled")
+
+    scene.blendcap_motion_bridge_preroll_pose_source = "REST"
+    rest = blendcap_motion_bridge.operators._sample_preroll_pose(
+        bpy.context, target
+    )
+    check(abs(rest[path][2]) < 1e-8, "rest pose source was not identity")
+
+    pose_action = bpy.data.actions.new("TEST_Custom_Initial_Pose")
+    pose_slot = pose_action.slots.new(id_type="OBJECT", name=target.name)
+    pose_curves = blendcap_motion_bridge.operators._ensure_fcurve_collection(
+        pose_action, pose_slot
+    )
+    pose_curve = pose_curves.new(path, index=2)
+    pose_curve.keyframe_points.insert(7.0, 0.6)
+    pose_curve.update()
+    scene.blendcap_motion_bridge_preroll_pose_source = "ACTION"
+    scene.blendcap_motion_bridge_preroll_pose_action = pose_action
+    scene.blendcap_motion_bridge_preroll_pose_frame = 7
+    sampled = blendcap_motion_bridge.operators._sample_preroll_pose(
+        bpy.context, target
+    )
+    check(abs(sampled[path][2] - 0.6) < 1e-5, "custom Action pose was not sampled")
+    check(animation_data.action == baseline, "pose sampling did not restore target Action")
+    check(scene.frame_current == 3, "pose sampling did not restore current frame")
+    return {
+        "current": current[path][2],
+        "rest": rest[path][2],
+        "action": sampled[path][2],
+    }
+
+
+def test_face_layered_action() -> dict:
+    import numpy as np
+
+    remove_test_data()
+    mesh = bpy.data.meshes.new("FaceMeshData")
+    mesh.from_pydata(
+        ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        (),
+        ((0, 1, 2),),
+    )
+    obj = bpy.data.objects.new("FaceMesh", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    obj.shape_key_add(name="Basis")
+    obj.shape_key_add(name="jawOpen")
+    npz_path = RUN_ROOT / "face_layered_action.npz"
+    np.savez(
+        npz_path,
+        face_blendshapes=np.array(((0.25,), (0.75,)), dtype=np.float32),
+        blendshape_names=np.array(("jawOpen",)),
+        fps=np.array(30.0),
+    )
+    scene = bpy.context.scene
+    scene.blendcap_motion_bridge_face_npz = str(npz_path)
+    scene.blendcap_motion_bridge_face_mesh = obj
+
+    result = bpy.ops.blendcap_motion_bridge.apply_face("EXEC_DEFAULT")
+
+    check(result == {"FINISHED"}, f"face Action creation failed: {result}")
+    animation_data = obj.data.shape_keys.animation_data
+    action = animation_data.action
+    check(action is not None, "face Action was not bound")
+    check(action.get("blendcap_motion_bridge_role") == "FACE_OUTPUT", "face Action tag missing")
+    curves = blendcap_motion_bridge.operators._action_fcurves(
+        action, blendcap_motion_bridge.operators._action_slot(animation_data)
+    )
+    check(len(curves) == 1, f"unexpected face F-Curve count: {len(curves)}")
+    points = [(float(point.co.x), float(point.co.y)) for point in curves[0].keyframe_points]
+    check(len(points) == 2, f"unexpected face key count: {points}")
+    check(abs(points[0][0] - 1.0) < 1e-6 and abs(points[0][1] - 0.25) < 1e-5, points)
+    check(abs(points[1][0] - 2.0) < 1e-6 and abs(points[1][1] - 0.75) < 1e-5, points)
+    return {"keys": points, "action": action.name}
+
+
+def test_preroll_timing_edges() -> dict:
+    def build_case(hold: int, transition: int):
+        remove_test_data()
+        target = create_target()
+        scene = bpy.context.scene
+        scene.blendcap_motion_bridge_preroll_hold_frames = hold
+        scene.blendcap_motion_bridge_preroll_transition_frames = transition
+        animation_data = target.animation_data_create()
+        action = bpy.data.actions.new(f"TEST_PreRoll_{hold}_{transition}")
+        slot = action.slots.new(id_type="OBJECT", name=target.name)
+        blendcap_motion_bridge.operators._bind_action(animation_data, action, slot)
+        animation_data.action_slot = slot
+        waist = target.pose.bones["腰"]
+        waist.rotation_mode = "XYZ"
+        path = waist.path_from_id("rotation_euler")
+        curves = blendcap_motion_bridge.operators._ensure_fcurve_collection(
+            action, slot
+        )
+        curve = curves.new(path, index=2)
+        curve.keyframe_points.insert(1.0, 1.0)
+        curve.keyframe_points.insert(10.0, 1.25)
+        curve.update()
+        snapshot = blendcap_motion_bridge.operators._capture_pose_channels(target)
+        result = blendcap_motion_bridge.operators._apply_preroll(
+            scene, target, action, snapshot
+        )
+        frames = [int(round(point.co.x)) for point in curve.keyframe_points]
+        interpolation = [point.interpolation for point in curve.keyframe_points]
+        return result, frames, interpolation
+
+    transition_only = build_case(0, 4)
+    check(transition_only[0] == (-3, 1), transition_only)
+    check(transition_only[1] == [-3, 1, 10], transition_only)
+
+    hold_only = build_case(3, 0)
+    check(hold_only[0] == (-2, 1), hold_only)
+    check(hold_only[1] == [-2, 0, 1, 10], hold_only)
+    check(hold_only[2][0] == "CONSTANT", hold_only)
+    check(hold_only[2][1] == "CONSTANT", hold_only)
+
+    disabled = build_case(0, 0)
+    check(disabled[0] is None, disabled)
+    check(disabled[1] == [1, 10], disabled)
+    check(
+        not bpy.context.scene.blendcap_motion_bridge_preroll_pending,
+        "zero-length pre-roll should not create pending state",
+    )
+    return {
+        "transition_only": transition_only[1],
+        "hold_only": hold_only[1],
+        "zero": disabled[1],
+    }
+
+
 def test_fk_safe_and_restore() -> dict:
     remove_test_data()
     source = create_source()
@@ -528,6 +717,9 @@ def test_fk_safe_and_restore() -> dict:
     animation_data = target.animation_data_create()
     blendcap_motion_bridge.operators._bind_action(animation_data, baseline)
     animation_data.use_nla = False
+    target.pose.bones["腰"].rotation_mode = "XYZ"
+    target.pose.bones["腰"].rotation_euler.z = 0.2
+    bpy.context.view_layer.update()
     scene.blendcap_retarget_auto_bake_ik = True
     FAKE_BAKE.update(mode="fk", target=target, **constraints)
 
@@ -537,6 +729,38 @@ def test_fk_safe_and_restore() -> dict:
     output = animation_data.action
     check(output is not None and output != baseline, "independent output Action was not created")
     check(output.get("blendcap_motion_bridge_role") == "RETARGET_OUTPUT", "output ownership tag missing")
+    check(output.get("blendcap_motion_bridge_preroll_pending") is True, "pre-roll ownership tag missing")
+    check(scene.blendcap_motion_bridge_preroll_pending, "scene did not record pending pre-roll")
+    check(
+        scene.blendcap_motion_bridge_preroll_simulated,
+        "formal retarget did not automatically evaluate the pre-roll range",
+    )
+    check(scene.blendcap_motion_bridge_preroll_start == -29, "unexpected pre-roll start")
+    check(scene.blendcap_motion_bridge_preroll_motion_start == 1, "real motion start moved")
+    waist_path = target.pose.bones["腰"].path_from_id("rotation_euler")
+    output_curves = blendcap_motion_bridge.operators._action_fcurves(
+        output, blendcap_motion_bridge.operators._action_slot(animation_data)
+    )
+    waist_curve = next(
+        (
+            fcurve
+            for fcurve in output_curves
+            if fcurve.data_path == waist_path and int(fcurve.array_index) == 2
+        ),
+        None,
+    )
+    check(waist_curve is not None, "waist test F-Curve missing")
+    frames = [int(round(point.co.x)) for point in waist_curve.keyframe_points]
+    check(frames == [-29, -21, 1, 10], f"unexpected pre-roll keys: {frames}")
+    check(abs(waist_curve.evaluate(-29) - 0.2) < 1e-5, "initial pose was not captured")
+    check(abs(waist_curve.evaluate(1) - 1.0) < 1e-5, "real first-frame pose changed")
+    first_motion_point = next(
+        point for point in waist_curve.keyframe_points if abs(point.co.x - 1.0) < 1e-5
+    )
+    check(
+        first_motion_point.interpolation == "LINEAR",
+        "pre-roll changed formal motion interpolation",
+    )
     check(constraints["leg"].mute and constraints["leg"].influence == 0.0, "leg IK not held off")
     check(
         constraints["leg_muted"].mute and constraints["leg_muted"].influence == 0.0,
@@ -557,6 +781,25 @@ def test_fk_safe_and_restore() -> dict:
     check(bool(scene.blendcap_motion_bridge_constraint_snapshot), "constraint baseline was not saved")
     check(scene.blendcap_motion_bridge_previous_state_available, "target animation baseline missing")
     check(bool(scene.blendcap_motion_bridge_previous_table_json), "previous BlendCap table was not saved")
+
+    run_preroll = bpy.ops.blendcap_motion_bridge.run_preroll("EXEC_DEFAULT")
+    check(run_preroll == {"FINISHED"}, f"pre-roll evaluation failed: {run_preroll}")
+    check(scene.frame_current == 1, "pre-roll did not finish on the real motion start")
+    check(scene.blendcap_motion_bridge_preroll_simulated, "pre-roll evaluation was not recorded")
+    blocked_cleanup, _cleanup_error = blocked_call(
+        bpy.ops.blendcap_motion_bridge.cleanup_preroll,
+        "裙发物理烘焙",
+    )
+    check(blocked_cleanup == {"CANCELLED"}, "pre-roll cleanup ignored bake confirmation")
+    scene.blendcap_motion_bridge_preroll_cleanup_confirmed = True
+    cleanup = bpy.ops.blendcap_motion_bridge.cleanup_preroll("EXEC_DEFAULT")
+    check(cleanup == {"FINISHED"}, f"pre-roll cleanup failed: {cleanup}")
+    frames_after_cleanup = [
+        int(round(point.co.x)) for point in waist_curve.keyframe_points
+    ]
+    check(frames_after_cleanup == [1, 10], f"cleanup moved real motion: {frames_after_cleanup}")
+    check(abs(waist_curve.evaluate(1) - 1.0) < 1e-5, "cleanup changed the real first frame")
+    check(not scene.blendcap_motion_bridge_preroll_pending, "pre-roll state not cleared")
 
     restore = bpy.ops.blendcap_motion_bridge.restore_previous_state("EXEC_DEFAULT")
 
@@ -583,6 +826,8 @@ def test_fk_safe_and_restore() -> dict:
         "quick_retarget": "FINISHED",
         "output": output.name,
         "fake_bake_calls": FAKE_BAKE["calls"],
+        "preroll_range": [-29, 0],
+        "real_motion_start": 1,
         "restored_leg_influence": constraints["leg"].influence,
         "restored_table_pairs": len(scene.blendcap_retarget_pairs),
     }
@@ -593,6 +838,9 @@ TESTS = (
     ("soma_hard_block", test_soma_hard_block),
     ("stale_pair_table_block", test_stale_pair_table_block),
     ("stale_target_signature_block", test_stale_target_signature_block),
+    ("preroll_pose_sources", test_preroll_pose_sources),
+    ("face_layered_action", test_face_layered_action),
+    ("preroll_timing_edges", test_preroll_timing_edges),
     ("fk_safe_and_restore", test_fk_safe_and_restore),
 )
 
@@ -631,10 +879,10 @@ def main() -> None:
         "results": results,
         "failures": failures,
     }
-    print("BLENDCAP_MOTION_BRIDGE_INTEGRATION_030=" + json.dumps(report, ensure_ascii=False))
+    print("BLENDCAP_MOTION_BRIDGE_INTEGRATION_040=" + json.dumps(report, ensure_ascii=False))
     if failures:
         raise RuntimeError(
-            "BlendCap Motion Bridge 0.3.0 integration regression(s): "
+            "BlendCap Motion Bridge 0.4.0 integration regression(s): "
             + ", ".join(sorted(failures))
         )
 

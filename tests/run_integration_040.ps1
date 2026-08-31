@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $testsRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
 $runRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $testsRoot ('.tmp-integration-030-' + [guid]::NewGuid().ToString('N')))
+    (Join-Path $testsRoot ('.tmp-integration-040-' + [guid]::NewGuid().ToString('N')))
 )
 $requiredPrefix = $testsRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 if (-not $runRoot.StartsWith($requiredPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -30,7 +30,7 @@ try {
     $env:BLENDER_USER_DATAFILES = Join-Path $runRoot 'datafiles'
     $env:BCMB_TEST_ROOT = $runRoot
 
-    & $BlenderPath --background --factory-startup --python-exit-code 1 --python (Join-Path $testsRoot 'integration_030_factory.py')
+    & $BlenderPath --background --factory-startup --python-exit-code 1 --python (Join-Path $testsRoot 'integration_040_factory.py')
     if ($LASTEXITCODE -ne 0) {
         throw "Blender integration test failed with exit code $LASTEXITCODE"
     }

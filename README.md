@@ -53,13 +53,13 @@ python .\test_safety_profiles.py
 Factory-startup registration check:
 
 \`\`\`powershell
-blender --background --factory-startup --python-exit-code 1 --python .\test_registration_030.py
+blender --background --factory-startup --python-exit-code 1 --python .\test_registration_040.py
 \`\`\`
 
 Isolated Blender integration regression:
 
 \`\`\`powershell
-powershell -ExecutionPolicy Bypass -File .\tests\run_integration_030.ps1 -BlenderPath "C:\path\to\blender.exe"
+powershell -ExecutionPolicy Bypass -File .\tests\run_integration_040.ps1 -BlenderPath "C:\path\to\blender.exe"
 \`\`\`
 
 ## Identity migration
@@ -69,6 +69,22 @@ development name. The manifest ID, Python package, operator namespace, Scene
 RNA properties, panel classes, action ownership tags, and preset prefix now
 use \`blendcap_motion_bridge\`, \`BCMB_*\`, or \`blendcap_motion_bridge_*\` as
 appropriate. Legacy IDs are not registered.
+
+## Negative-frame pre-roll
+
+Version 0.4.0 can create a recorded pre-roll range before the first real
+retargeted frame without shifting the motion itself. Choose the initial pose
+from the target's current pose, its Rest Pose, or a selected Action frame, then
+set independent hold and transition durations. For example, a 30-frame buffer
+in front of real frame 1 occupies frames -29 through 0, while frame 1 and every
+later motion, face, camera, and audio timecode remain unchanged.
+
+The retarget operation writes and evaluates the negative-frame transition and
+moves the rigid-body point-cache start to the pre-roll start when an MMD rigid
+body world is present. Bake skirt and hair physics with that range included.
+After the physics result has been baked to animation keys, confirm the bake in
+the panel and run **Finish and Clean Pre-roll**. Cleanup deletes only keys
+before the recorded real motion start; it never shifts production keys.
 
 ## License
 

@@ -971,6 +971,7 @@ class BCMB_OT_apply_face(bpy.types.Operator):
         except Exception:
             key_slot.active = True
         sk_data.animation_data.action_slot = key_slot
+        fcurves = _ensure_fcurve_collection(action, key_slot)
         frames = np.arange(1, n_frames + 1, dtype=np.float64)
         linear = 1
         try:
@@ -978,9 +979,9 @@ class BCMB_OT_apply_face(bpy.types.Operator):
                 path = obj.data.shape_keys.key_blocks[
                     channel.target
                 ].path_from_id("value")
-                fc = action.fcurves.find(path)
+                fc = fcurves.find(path)
                 if fc is None:
-                    fc = action.fcurves.new(path)
+                    fc = fcurves.new(path)
                 pts = fc.keyframe_points
                 pts.add(n_frames)
                 co = np.empty(n_frames * 2, dtype=np.float64)
@@ -995,6 +996,7 @@ class BCMB_OT_apply_face(bpy.types.Operator):
         except Exception as exc:
             _bind_action(animation_data, previous_action, previous_slot)
             animation_data.use_nla = previous_use_nla
+            action.use_fake_user = False
             if action.users == 0:
                 bpy.data.actions.remove(action)
             self.report({"ERROR"}, f"表情 Action 创建失败；原动画已恢复：{exc}")
@@ -1051,6 +1053,291 @@ def _bind_action(animation_data, action, preferred_slot=None):
             animation_data.action_slot = suitable[0]
         except (AttributeError, RuntimeError, TypeError):
             pass
+
+
+_POSE_CHANNELS = (
+    "location",
+    "rotation_euler",
+    "rotation_quaternion",
+    "rotation_axis_angle",
+    "scale",
+)
+_REST_VALUES = {
+    "location": (0.0, 0.0, 0.0),
+    "rotation_euler": (0.0, 0.0, 0.0),
+    "rotation_quaternion": (1.0, 0.0, 0.0, 0.0),
+    "rotation_axis_angle": (0.0, 0.0, 1.0, 0.0),
+    "scale": (1.0, 1.0, 1.0),
+}
+_PREROLL_START_MARKER = "BCMB_PRE_ROLL_START"
+_MOTION_START_MARKER = "BCMB_MOTION_START"
+
+
+def _capture_pose_channels(target, rest_pose=False):
+    """Capture transform-channel values addressable by an Action F-Curve."""
+    values = {
+        "location": tuple(float(value) for value in target.location),
+        "rotation_euler": tuple(float(value) for value in target.rotation_euler),
+        "rotation_quaternion": tuple(float(value) for value in target.rotation_quaternion),
+        "rotation_axis_angle": tuple(float(value) for value in target.rotation_axis_angle),
+        "scale": tuple(float(value) for value in target.scale),
+    }
+    for pose_bone in target.pose.bones:
+        for prop_name in _POSE_CHANNELS:
+            path = pose_bone.path_from_id(prop_name)
+            source = _REST_VALUES[prop_name] if rest_pose else getattr(pose_bone, prop_name)
+            values[path] = tuple(float(value) for value in source)
+    return values
+
+
+def _sample_preroll_pose(context, target):
+    scene = context.scene
+    source = scene.blendcap_motion_bridge_preroll_pose_source
+    if source == "REST":
+        return _capture_pose_channels(target, rest_pose=True)
+    if source == "CURRENT":
+        context.view_layer.update()
+        return _capture_pose_channels(target)
+    action = scene.blendcap_motion_bridge_preroll_pose_action
+    if action is None:
+        raise RuntimeError("初始姿态来源为 Action 时必须选择姿态 Action")
+
+    animation_data = target.animation_data_create()
+    previous_action = animation_data.action
+    previous_slot = _action_slot(animation_data)
+    previous_use_nla = bool(animation_data.use_nla)
+    previous_frame = scene.frame_current
+    try:
+        _bind_action(animation_data, action)
+        animation_data.use_nla = False
+        scene.frame_set(scene.blendcap_motion_bridge_preroll_pose_frame)
+        context.view_layer.update()
+        return _capture_pose_channels(target)
+    finally:
+        _bind_action(animation_data, previous_action, previous_slot)
+        animation_data.use_nla = previous_use_nla
+        scene.frame_set(previous_frame)
+        context.view_layer.update()
+
+
+def _action_channelbags(action, slot=None):
+    bags = []
+    slot_handle = getattr(slot, "handle", None) if slot is not None else None
+    for layer in getattr(action, "layers", ()) or ():
+        for strip in getattr(layer, "strips", ()) or ():
+            if getattr(strip, "type", "") != "KEYFRAME":
+                continue
+            for channelbag in getattr(strip, "channelbags", ()) or ():
+                if (
+                    slot_handle is None
+                    or getattr(channelbag, "slot_handle", None) == slot_handle
+                ):
+                    bags.append(channelbag)
+    return tuple(bags)
+
+
+def _action_fcurves(action, slot=None):
+    legacy_fcurves = getattr(action, "fcurves", None)
+    if legacy_fcurves is not None:
+        return tuple(legacy_fcurves)
+    return tuple(
+        fcurve
+        for channelbag in _action_channelbags(action, slot)
+        for fcurve in channelbag.fcurves
+    )
+
+
+def _ensure_fcurve_collection(action, slot=None):
+    legacy_fcurves = getattr(action, "fcurves", None)
+    if legacy_fcurves is not None:
+        return legacy_fcurves
+    if slot is None:
+        try:
+            slot = action.slots.active
+        except (AttributeError, RuntimeError):
+            slot = next(iter(getattr(action, "slots", ()) or ()), None)
+    if slot is None:
+        raise RuntimeError("分层 Action 没有可写入的 Slot")
+    channelbags = _action_channelbags(action, slot)
+    if channelbags:
+        return channelbags[0].fcurves
+    layers = getattr(action, "layers", None)
+    if layers is None:
+        raise RuntimeError("Action 不支持 F-Curve 或 Layer")
+    layer = next(iter(layers), None)
+    if layer is None:
+        layer = layers.new("BCMB Layer")
+    strip = next(
+        (
+            item
+            for item in getattr(layer, "strips", ()) or ()
+            if getattr(item, "type", "") == "KEYFRAME"
+        ),
+        None,
+    )
+    if strip is None:
+        strip = layer.strips.new(type="KEYFRAME")
+    return strip.channelbags.new(slot).fcurves
+
+
+def _action_first_frame(action, slot=None):
+    frames = [
+        float(point.co.x)
+        for fcurve in _action_fcurves(action, slot)
+        for point in fcurve.keyframe_points
+    ]
+    if not frames:
+        raise RuntimeError("BlendCap 输出 Action 没有关键帧，无法建立起始缓冲")
+    return int(round(min(frames)))
+
+
+def _keyframe_at(fcurve, frame):
+    return next(
+        (
+            point
+            for point in fcurve.keyframe_points
+            if abs(float(point.co.x) - float(frame)) <= 1e-4
+        ),
+        None,
+    )
+
+
+def _set_fcurve_key(fcurve, frame, value, interpolation="BEZIER"):
+    point = _keyframe_at(fcurve, frame)
+    if point is None:
+        point = fcurve.keyframe_points.insert(float(frame), float(value), options={"FAST"})
+    else:
+        point.co.y = float(value)
+    point.interpolation = interpolation
+    if interpolation == "BEZIER":
+        point.handle_left_type = "AUTO_CLAMPED"
+        point.handle_right_type = "AUTO_CLAMPED"
+    return point
+
+
+def _set_timeline_marker(scene, name, frame):
+    marker = scene.timeline_markers.get(name)
+    if marker is None:
+        marker = scene.timeline_markers.new(name, frame=int(frame))
+    else:
+        marker.frame = int(frame)
+
+
+def _remove_timeline_marker(scene, name):
+    marker = scene.timeline_markers.get(name)
+    if marker is not None:
+        scene.timeline_markers.remove(marker)
+
+
+def _rigid_body_point_cache(scene):
+    world = getattr(scene, "rigidbody_world", None)
+    return getattr(world, "point_cache", None) if world is not None else None
+
+
+def _check_preroll_cache(scene):
+    cache = _rigid_body_point_cache(scene)
+    if cache is not None and cache.is_baked:
+        raise RuntimeError("刚体缓存已烘焙；请先删除现有物理烘焙再执行带起始缓冲的重定向")
+
+
+def _apply_preroll(scene, target, action, snapshot):
+    hold = int(scene.blendcap_motion_bridge_preroll_hold_frames)
+    transition = int(scene.blendcap_motion_bridge_preroll_transition_frames)
+    total = hold + transition
+    if not scene.blendcap_motion_bridge_preroll_enabled or total <= 0:
+        return None
+
+    animation_data = target.animation_data
+    slot = _action_slot(animation_data) if animation_data is not None else None
+    motion_start = _action_first_frame(action, slot)
+    preroll_start = motion_start - total
+    fcurves = _action_fcurves(action, slot)
+    first_values = {
+        (fcurve.data_path, int(fcurve.array_index)): float(fcurve.evaluate(motion_start))
+        for fcurve in fcurves
+    }
+    transition_start = motion_start - transition
+    for fcurve in fcurves:
+        key = (fcurve.data_path, int(fcurve.array_index))
+        channel_values = snapshot.get(fcurve.data_path)
+        if channel_values is not None and int(fcurve.array_index) < len(channel_values):
+            initial_value = float(channel_values[int(fcurve.array_index)])
+        else:
+            initial_value = first_values[key]
+
+        start_interpolation = "CONSTANT" if hold > 0 else "BEZIER"
+        _set_fcurve_key(fcurve, preroll_start, initial_value, start_interpolation)
+        if hold > 0:
+            hold_end = transition_start if transition > 0 else motion_start - 1
+            hold_interpolation = "BEZIER" if transition > 0 else "CONSTANT"
+            _set_fcurve_key(fcurve, hold_end, initial_value, hold_interpolation)
+        motion_point = _keyframe_at(fcurve, motion_start)
+        if motion_point is None:
+            _set_fcurve_key(
+                fcurve, motion_start, first_values[key], "CONSTANT"
+            )
+        else:
+            motion_point.co.y = first_values[key]
+        fcurve.update()
+
+    cache = _rigid_body_point_cache(scene)
+    previous_cache_start = int(cache.frame_start) if cache is not None else motion_start
+    if cache is not None:
+        cache.frame_start = preroll_start
+
+    action["blendcap_motion_bridge_preroll_pending"] = True
+    action["blendcap_motion_bridge_preroll_start"] = preroll_start
+    action["blendcap_motion_bridge_motion_start"] = motion_start
+    action["blendcap_motion_bridge_preroll_hold_frames"] = hold
+    action["blendcap_motion_bridge_preroll_transition_frames"] = transition
+    scene.blendcap_motion_bridge_preroll_pending = True
+    scene.blendcap_motion_bridge_preroll_start = preroll_start
+    scene.blendcap_motion_bridge_preroll_motion_start = motion_start
+    scene.blendcap_motion_bridge_preroll_target = target
+    scene.blendcap_motion_bridge_preroll_action = action
+    scene.blendcap_motion_bridge_preroll_simulated = False
+    scene.blendcap_motion_bridge_preroll_cleanup_confirmed = False
+    scene.blendcap_motion_bridge_preroll_previous_cache_start = previous_cache_start
+    _set_timeline_marker(scene, _PREROLL_START_MARKER, preroll_start)
+    _set_timeline_marker(scene, _MOTION_START_MARKER, motion_start)
+    return preroll_start, motion_start
+
+
+def _clear_preroll_state(scene, restore_unbaked_cache=False):
+    cache = _rigid_body_point_cache(scene)
+    if (
+        restore_unbaked_cache
+        and cache is not None
+        and not cache.is_baked
+    ):
+        cache.frame_start = scene.blendcap_motion_bridge_preroll_previous_cache_start
+    _remove_timeline_marker(scene, _PREROLL_START_MARKER)
+    _remove_timeline_marker(scene, _MOTION_START_MARKER)
+    scene.blendcap_motion_bridge_preroll_pending = False
+    scene.blendcap_motion_bridge_preroll_target = None
+    scene.blendcap_motion_bridge_preroll_action = None
+    scene.blendcap_motion_bridge_preroll_simulated = False
+    scene.blendcap_motion_bridge_preroll_cleanup_confirmed = False
+
+
+def _delete_keys_before(action, frame, slot=None):
+    removed = 0
+    for fcurve in _action_fcurves(action, slot):
+        while True:
+            point = next(
+                (
+                    item
+                    for item in fcurve.keyframe_points
+                    if float(item.co.x) < float(frame) - 1e-4
+                ),
+                None,
+            )
+            if point is None:
+                break
+            fcurve.keyframe_points.remove(point, fast=True)
+            removed += 1
+        fcurve.update()
+    return removed
 
 
 def _constraint_rows(target, constraints):
@@ -1151,6 +1438,11 @@ class BCMB_OT_apply_retarget_fk_safe(bpy.types.Operator):
             scene.blendcap_motion_bridge_status = "当前 BlendCap pair table 不属于所选 BVH/MMD；请先点“安全准备映射”"
             self.report({"ERROR"}, scene.blendcap_motion_bridge_status)
             return {"CANCELLED"}
+        if scene.blendcap_motion_bridge_preroll_pending:
+            scene.blendcap_motion_bridge_status_level = "ERROR"
+            scene.blendcap_motion_bridge_status = "已有未清理的预滚动区；请先烘焙并清理，或恢复原状态"
+            self.report({"ERROR"}, scene.blendcap_motion_bridge_status)
+            return {"CANCELLED"}
         if scene.blendcap_motion_bridge_previous_state_available:
             try:
                 baseline_target = scene.blendcap_motion_bridge_previous_target
@@ -1168,6 +1460,23 @@ class BCMB_OT_apply_retarget_fk_safe(bpy.types.Operator):
             scene.blendcap_motion_bridge_status = f"上次约束快照不完整：{'、'.join(restore_missing[:4])}"
             self.report({"ERROR"}, scene.blendcap_motion_bridge_status)
             return {"CANCELLED"}
+
+        preroll_snapshot = None
+        if (
+            scene.blendcap_motion_bridge_preroll_enabled
+            and (
+                scene.blendcap_motion_bridge_preroll_hold_frames
+                + scene.blendcap_motion_bridge_preroll_transition_frames
+            ) > 0
+        ):
+            try:
+                _check_preroll_cache(scene)
+                preroll_snapshot = _sample_preroll_pose(context, target)
+            except Exception as exc:
+                scene.blendcap_motion_bridge_status_level = "ERROR"
+                scene.blendcap_motion_bridge_status = f"起始缓冲准备失败：{exc}"
+                self.report({"ERROR"}, scene.blendcap_motion_bridge_status)
+                return {"CANCELLED"}
 
         thigh_targets = _thigh_targets(scene, source, target)
         ik_constraints = _leg_ik_constraints(target)
@@ -1220,8 +1529,20 @@ class BCMB_OT_apply_retarget_fk_safe(bpy.types.Operator):
             created_action["blendcap_motion_bridge_source"] = source.name
             created_action["blendcap_motion_bridge_target"] = target.name
             created_action["blendcap_motion_bridge_mapping_signature"] = scene.blendcap_motion_bridge_mapping_signature
+            if preroll_snapshot is not None:
+                preroll_range = _apply_preroll(
+                    scene, target, created_action, preroll_snapshot
+                )
+                if preroll_range is not None:
+                    preroll_result = bpy.ops.blendcap_motion_bridge.run_preroll(
+                        "EXEC_DEFAULT"
+                    )
+                    if preroll_result != {"FINISHED"}:
+                        raise RuntimeError(f"负帧预滚动未完成：{preroll_result}")
         except Exception as exc:
             failure = str(exc)
+            if scene.blendcap_motion_bridge_preroll_pending:
+                _clear_preroll_state(scene, restore_unbaked_cache=True)
             _restore_constraint_rows(target, snapshot_rows)
             failed_action = animation_data.action
             try:
@@ -1235,9 +1556,10 @@ class BCMB_OT_apply_retarget_fk_safe(bpy.types.Operator):
                 failed_action is not None
                 and failed_action != previous_action
                 and failed_action.as_pointer() not in before_actions
-                and failed_action.users == 0
             ):
-                bpy.data.actions.remove(failed_action)
+                failed_action.use_fake_user = False
+                if failed_action.users == 0:
+                    bpy.data.actions.remove(failed_action)
         finally:
             scene.blendcap_retarget_auto_bake_ik = auto_bake_ik
 
@@ -1261,9 +1583,17 @@ class BCMB_OT_apply_retarget_fk_safe(bpy.types.Operator):
             scene.blendcap_motion_bridge_previous_action_fake_user = previous_fake_user
         scene.blendcap_motion_bridge_last_output_action = created_action.name
         scene.blendcap_motion_bridge_status_level = "READY"
+        if scene.blendcap_motion_bridge_preroll_pending:
+            buffer_note = (
+                f"；预滚动 {scene.blendcap_motion_bridge_preroll_start}"
+                f"～{scene.blendcap_motion_bridge_preroll_motion_start - 1}，"
+                f"正式动作从 {scene.blendcap_motion_bridge_preroll_motion_start} 开始"
+            )
+        else:
+            buffer_note = ""
         scene.blendcap_motion_bridge_status = (
             f"完成：{created_action.name}；仅关闭 {disabled_ik} 个腿 IK、"
-            f"{disabled_cancel} 个腰取消约束"
+            f"{disabled_cancel} 个腰取消约束{buffer_note}"
         )
         self.report({"INFO"}, scene.blendcap_motion_bridge_status)
         return {"FINISHED"}
@@ -1306,6 +1636,123 @@ class BCMB_OT_quick_retarget(bpy.types.Operator):
                 scene.blendcap_motion_bridge_previous_table_json = ""
             self.report({"ERROR"}, "一键重定向未完成；旧 BlendCap 映射已恢复")
             return {"CANCELLED"}
+        return {"FINISHED"}
+
+
+class BCMB_OT_run_preroll(bpy.types.Operator):
+    bl_idname = "blendcap_motion_bridge.run_preroll"
+    bl_label = "运行负帧预滚动"
+    bl_description = "从记录的负帧起点逐帧求值到真实动作首帧，让裙发物理获得稳定初态"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.scene.blendcap_motion_bridge_preroll_pending)
+
+    def execute(self, context):
+        scene = context.scene
+        start = int(scene.blendcap_motion_bridge_preroll_start)
+        motion_start = int(scene.blendcap_motion_bridge_preroll_motion_start)
+        target = scene.blendcap_motion_bridge_preroll_target
+        if target is None or target.type != "ARMATURE":
+            self.report({"ERROR"}, "预滚动目标骨架已不存在")
+            return {"CANCELLED"}
+        if start >= motion_start:
+            self.report({"ERROR"}, "记录的预滚动范围无效")
+            return {"CANCELLED"}
+
+        cache = _rigid_body_point_cache(scene)
+        if cache is not None:
+            if cache.is_baked:
+                if int(cache.frame_start) > start:
+                    self.report({"ERROR"}, "当前刚体烘焙未包含完整负帧区；请删除烘焙后重新运行")
+                    return {"CANCELLED"}
+                scene.blendcap_motion_bridge_preroll_simulated = True
+                scene.frame_set(motion_start)
+                self.report({"INFO"}, "刚体缓存已包含预滚动区，无需重复运行")
+                return {"FINISHED"}
+            cache.frame_start = start
+
+        total = motion_start - start + 1
+        wm = context.window_manager
+        wm.progress_begin(0, total)
+        try:
+            for index, frame in enumerate(range(start, motion_start + 1)):
+                scene.frame_set(frame)
+                context.view_layer.update()
+                wm.progress_update(index + 1)
+        finally:
+            wm.progress_end()
+        scene.frame_set(motion_start)
+        scene.blendcap_motion_bridge_preroll_simulated = True
+        scene.blendcap_motion_bridge_status_level = "READY"
+        scene.blendcap_motion_bridge_status = (
+            f"预滚动已求值：{start}～{motion_start - 1}；"
+            f"真实动作首帧 {motion_start} 保持不变"
+        )
+        self.report({"INFO"}, scene.blendcap_motion_bridge_status)
+        return {"FINISHED"}
+
+
+class BCMB_OT_cleanup_preroll(bpy.types.Operator):
+    bl_idname = "blendcap_motion_bridge.cleanup_preroll"
+    bl_label = "完成并清理预滚动"
+    bl_description = "物理烘焙完成后删除真实动作首帧之前的键；不会移动正式动作"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.scene.blendcap_motion_bridge_preroll_pending)
+
+    def execute(self, context):
+        scene = context.scene
+        if not scene.blendcap_motion_bridge_preroll_cleanup_confirmed:
+            self.report({"ERROR"}, "请先完成裙发物理烘焙，并勾选确认项")
+            return {"CANCELLED"}
+        try:
+            target = scene.blendcap_motion_bridge_preroll_target
+        except ReferenceError:
+            target = None
+        if target is None or target.type != "ARMATURE":
+            self.report({"ERROR"}, "预滚动目标骨架已不存在")
+            return {"CANCELLED"}
+        animation_data = target.animation_data
+        action = animation_data.action if animation_data is not None else None
+        try:
+            recorded_action = scene.blendcap_motion_bridge_preroll_action
+        except ReferenceError:
+            recorded_action = None
+        actions = []
+        for candidate in (action, recorded_action):
+            if candidate is not None and candidate not in actions:
+                actions.append(candidate)
+        if not actions:
+            self.report({"ERROR"}, "没有可清理的目标 Action")
+            return {"CANCELLED"}
+
+        motion_start = int(scene.blendcap_motion_bridge_preroll_motion_start)
+        active_slot = _action_slot(animation_data) if animation_data is not None else None
+        removed = 0
+        for candidate in actions:
+            slot = active_slot if candidate == action else None
+            removed += _delete_keys_before(candidate, motion_start, slot)
+            for key in (
+                "blendcap_motion_bridge_preroll_pending",
+                "blendcap_motion_bridge_preroll_start",
+                "blendcap_motion_bridge_motion_start",
+                "blendcap_motion_bridge_preroll_hold_frames",
+                "blendcap_motion_bridge_preroll_transition_frames",
+            ):
+                if key in candidate:
+                    del candidate[key]
+            candidate["blendcap_motion_bridge_preroll_cleaned"] = True
+        _clear_preroll_state(scene, restore_unbaked_cache=True)
+        scene.frame_set(motion_start)
+        scene.blendcap_motion_bridge_status_level = "READY"
+        scene.blendcap_motion_bridge_status = (
+            f"已删除 {removed} 个预滚动关键帧；正式动作仍从第 {motion_start} 帧开始"
+        )
+        self.report({"INFO"}, scene.blendcap_motion_bridge_status)
         return {"FINISHED"}
 
 
@@ -1369,6 +1816,8 @@ class BCMB_OT_restore_previous_state(bpy.types.Operator):
                 self.report({"ERROR"}, scene.blendcap_motion_bridge_status)
                 return {"CANCELLED"}
             scene.blendcap_motion_bridge_previous_table_json = ""
+        if scene.blendcap_motion_bridge_preroll_pending:
+            _clear_preroll_state(scene, restore_unbaked_cache=True)
         scene.blendcap_motion_bridge_status_level = "READY"
         scene.blendcap_motion_bridge_status = f"已恢复重定向前角色状态和 {restored} 个约束；输出 Action 保留"
         self.report({"INFO"}, scene.blendcap_motion_bridge_status)
@@ -1385,6 +1834,8 @@ CLASSES = (
     BCMB_OT_restore_leg_overrides,
     BCMB_OT_apply_retarget_fk_safe,
     BCMB_OT_quick_retarget,
+    BCMB_OT_run_preroll,
+    BCMB_OT_cleanup_preroll,
     BCMB_OT_restore_previous_state,
     BCMB_OT_apply_face,
 )

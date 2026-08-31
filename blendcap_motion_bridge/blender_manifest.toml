@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "blendcap_motion_bridge"
-version = "0.3.0"
+version = "0.4.0"
 name = "BlendCap Motion Bridge"
 tagline = "Bridge BlendCap BVH motion and facial capture to MMD"
 maintainer = "aaAarJimedes"

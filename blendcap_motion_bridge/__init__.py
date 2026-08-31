@@ -8,7 +8,7 @@ generates a BlendCap preset JSON that is loaded into the pair table.
 bl_info = {
     "name": "BlendCap Motion Bridge",
     "author": "aaAarJimedes",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > BlendCap",
     "description": "Bridge BlendCap BVH motion and facial capture to MMD characters",
@@ -130,6 +130,63 @@ def register():
     bpy.types.Scene.blendcap_motion_bridge_previous_table_json = bpy.props.StringProperty(
         name="Previous BlendCap Table", default="", options={"HIDDEN"}
     )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_enabled = bpy.props.BoolProperty(
+        name="启用起始缓冲",
+        description="在真实动作首帧之前追加负帧预滚动区；真实动作时间码保持不变",
+        default=True,
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_pose_source = bpy.props.EnumProperty(
+        name="初始姿态",
+        description="选择预滚动开始时使用的 MMD 初始姿态",
+        items=(
+            ("CURRENT", "执行时当前姿态", "使用点击重定向时目标骨架的当前姿态"),
+            ("REST", "MMD Rest Pose", "使用目标骨架的无位移、无旋转、单位缩放姿态"),
+            ("ACTION", "指定 Action 帧", "从指定 Action 的某一帧采样初始姿态"),
+        ),
+        default="CURRENT",
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_pose_action = bpy.props.PointerProperty(
+        name="姿态 Action", type=bpy.types.Action
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_pose_frame = bpy.props.IntProperty(
+        name="姿态帧", default=1, min=-1048574, max=1048574
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_hold_frames = bpy.props.IntProperty(
+        name="静置帧", description="初始姿态保持不动的帧数", default=8, min=0, max=10000
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_transition_frames = bpy.props.IntProperty(
+        name="过渡帧",
+        description="从初始姿态平滑过渡到真实动作首帧的帧数",
+        default=22,
+        min=0,
+        max=10000,
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_pending = bpy.props.BoolProperty(
+        name="Pre-roll Pending", default=False, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_start = bpy.props.IntProperty(
+        name="Pre-roll Start", default=0, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_motion_start = bpy.props.IntProperty(
+        name="Motion Start", default=1, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_target = bpy.props.PointerProperty(
+        name="Pre-roll Target", type=bpy.types.Object, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_action = bpy.props.PointerProperty(
+        name="Pre-roll Action", type=bpy.types.Action, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_simulated = bpy.props.BoolProperty(
+        name="Pre-roll Simulated", default=False, options={"HIDDEN"}
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_cleanup_confirmed = bpy.props.BoolProperty(
+        name="已完成裙发物理烘焙",
+        description="仅在裙发物理已经烘焙到关键帧后勾选；清理会删除真实动作首帧之前的键",
+        default=False,
+    )
+    bpy.types.Scene.blendcap_motion_bridge_preroll_previous_cache_start = bpy.props.IntProperty(
+        name="Previous Cache Start", default=1, options={"HIDDEN"}
+    )
     for cls in operators.CLASSES:
         bpy.utils.register_class(cls)
     for cls in panels.CLASSES:
@@ -177,5 +234,19 @@ def unregister():
         "blendcap_motion_bridge_previous_state_available",
         "blendcap_motion_bridge_last_output_action",
         "blendcap_motion_bridge_previous_table_json",
+        "blendcap_motion_bridge_preroll_enabled",
+        "blendcap_motion_bridge_preroll_pose_source",
+        "blendcap_motion_bridge_preroll_pose_action",
+        "blendcap_motion_bridge_preroll_pose_frame",
+        "blendcap_motion_bridge_preroll_hold_frames",
+        "blendcap_motion_bridge_preroll_transition_frames",
+        "blendcap_motion_bridge_preroll_pending",
+        "blendcap_motion_bridge_preroll_start",
+        "blendcap_motion_bridge_preroll_motion_start",
+        "blendcap_motion_bridge_preroll_target",
+        "blendcap_motion_bridge_preroll_action",
+        "blendcap_motion_bridge_preroll_simulated",
+        "blendcap_motion_bridge_preroll_cleanup_confirmed",
+        "blendcap_motion_bridge_preroll_previous_cache_start",
     ):
         delattr(bpy.types.Scene, name)

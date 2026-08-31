@@ -1,4 +1,4 @@
-"""Factory-startup registration and single-panel smoke for version 0.3.0."""
+"""Factory-startup registration and single-panel smoke for version 0.4.0."""
 
 import importlib
 from pathlib import Path
@@ -24,6 +24,8 @@ required = (
     "blendcap_motion_bridge.disable_leg_overrides",
     "blendcap_motion_bridge.restore_leg_overrides",
     "blendcap_motion_bridge.relink_leg_deform",
+    "blendcap_motion_bridge.run_preroll",
+    "blendcap_motion_bridge.cleanup_preroll",
     "blendcap_motion_bridge.restore_previous_state",
 )
 for path in required:
@@ -35,11 +37,16 @@ for name in (
     "blendcap_motion_bridge_mapping_signature",
     "blendcap_motion_bridge_constraint_snapshot",
     "blendcap_motion_bridge_previous_table_json",
+    "blendcap_motion_bridge_preroll_enabled",
+    "blendcap_motion_bridge_preroll_pose_source",
+    "blendcap_motion_bridge_preroll_hold_frames",
+    "blendcap_motion_bridge_preroll_transition_frames",
+    "blendcap_motion_bridge_preroll_pending",
 ):
     assert hasattr(bpy.types.Scene, name), name
 
 assert addon.bl_info["name"] == "BlendCap Motion Bridge"
-assert addon.bl_info["version"] == (0, 3, 0)
+assert addon.bl_info["version"] == (0, 4, 0)
 assert addon.panels.CLASSES == (addon.panels.BCMB_PT_main,)
 assert addon.panels.BCMB_PT_main.bl_label == "BlendCap Motion Bridge"
 
@@ -83,6 +90,9 @@ class RecordingLayout:
 bpy.types.Scene.blendcap_retarget_source = bpy.props.PointerProperty(type=bpy.types.Object)
 bpy.types.Scene.blendcap_retarget_target = bpy.props.PointerProperty(type=bpy.types.Object)
 bpy.context.scene.blendcap_motion_bridge_previous_state_available = True
+bpy.context.scene.blendcap_motion_bridge_preroll_pending = True
+bpy.context.scene.blendcap_motion_bridge_preroll_start = -29
+bpy.context.scene.blendcap_motion_bridge_preroll_motion_start = 1
 layout = RecordingLayout()
 addon.panels.BCMB_PT_main.draw(SimpleNamespace(layout=layout), bpy.context)
 expected_sections = (
@@ -98,6 +108,7 @@ for operator_id in required:
 del bpy.types.Scene.blendcap_retarget_source
 del bpy.types.Scene.blendcap_retarget_target
 bpy.context.scene.blendcap_motion_bridge_previous_state_available = False
+bpy.context.scene.blendcap_motion_bridge_preroll_pending = False
 
 addon.unregister()
-print("BLENDCAP_MOTION_BRIDGE_REGISTRATION_030=PASS")
+print("BLENDCAP_MOTION_BRIDGE_REGISTRATION_040=PASS")

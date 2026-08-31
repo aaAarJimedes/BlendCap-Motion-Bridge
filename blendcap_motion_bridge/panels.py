@@ -98,11 +98,61 @@ class BCMB_PT_main(bpy.types.Panel):
             warning = source.row()
             warning.alert = True
             warning.label(text="请先启用 BlendCap", icon="ERROR")
-        source.label(text="传统 BlendCap BVH；SOMA 请使用 BA Motion Bridge", icon="INFO")
+        source.label(text="传统 BlendCap BVH；SOMA 请使用 Proscenium Motion Bridge", icon="INFO")
 
         retarget = _section(layout, "2 · 动作重定向", "ACTION")
+        preroll = retarget.box()
+        preroll.prop(scene, "blendcap_motion_bridge_preroll_enabled")
+        if scene.blendcap_motion_bridge_preroll_enabled:
+            settings = preroll.column()
+            settings.enabled = not scene.blendcap_motion_bridge_preroll_pending
+            settings.prop(scene, "blendcap_motion_bridge_preroll_pose_source")
+            if scene.blendcap_motion_bridge_preroll_pose_source == "ACTION":
+                settings.prop(scene, "blendcap_motion_bridge_preroll_pose_action")
+                settings.prop(scene, "blendcap_motion_bridge_preroll_pose_frame")
+            timing = settings.row(align=True)
+            timing.prop(scene, "blendcap_motion_bridge_preroll_hold_frames")
+            timing.prop(scene, "blendcap_motion_bridge_preroll_transition_frames")
+            total = (
+                scene.blendcap_motion_bridge_preroll_hold_frames
+                + scene.blendcap_motion_bridge_preroll_transition_frames
+            )
+            settings.label(text=f"负帧预滚动共 {total} 帧；正式动作时间码不移动", icon="TIME")
+            if scene.blendcap_motion_bridge_preroll_pending:
+                preroll.separator()
+                preroll.label(
+                    text=(
+                        f"预滚动：{scene.blendcap_motion_bridge_preroll_start}"
+                        f"～{scene.blendcap_motion_bridge_preroll_motion_start - 1}"
+                    ),
+                    icon="PREVIEW_RANGE",
+                )
+                preroll.label(
+                    text=f"正式动作首帧：{scene.blendcap_motion_bridge_preroll_motion_start}",
+                    icon="KEYFRAME_HLT",
+                )
+                run_preroll = preroll.column()
+                run_preroll.scale_y = 1.15
+                run_preroll.operator(
+                    "blendcap_motion_bridge.run_preroll",
+                    text="运行负帧预滚动",
+                    icon="PHYSICS",
+                )
+                if scene.blendcap_motion_bridge_preroll_simulated:
+                    preroll.label(text="预滚动已求值；现在烘焙裙发物理", icon="CHECKMARK")
+                confirm = preroll.row()
+                confirm.alert = not scene.blendcap_motion_bridge_preroll_cleanup_confirmed
+                confirm.prop(scene, "blendcap_motion_bridge_preroll_cleanup_confirmed")
+                cleanup = preroll.column()
+                cleanup.enabled = scene.blendcap_motion_bridge_preroll_cleanup_confirmed
+                cleanup.operator(
+                    "blendcap_motion_bridge.cleanup_preroll",
+                    text="完成并清理预滚动",
+                    icon="TRASH",
+                )
+                preroll.label(text="清理只删除首帧之前的键，不移动正式动作", icon="LOCKED")
         run = retarget.column()
-        run.enabled = blendcap_ready
+        run.enabled = blendcap_ready and not scene.blendcap_motion_bridge_preroll_pending
         run.scale_y = 1.4
         run.operator("blendcap_motion_bridge.quick_retarget", text="自动准备并安全重定向", icon="PLAY")
         retarget.label(text="内存映射 · 独立 Action · 不写 preset", icon="LOCKED")
