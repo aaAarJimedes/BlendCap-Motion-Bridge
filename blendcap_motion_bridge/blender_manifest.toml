@@ -1,0 +1,28 @@
+schema_version = "1.0.0"
+
+id = "blendcap_motion_bridge"
+version = "0.3.0"
+name = "BlendCap Motion Bridge"
+tagline = "Bridge BlendCap BVH motion and facial capture to MMD"
+maintainer = "aaAarJimedes"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 aaAarJimedes"]
+
+tags = [
+  "Animation",
+  "Rigging",
+  "Pipeline",
+]
+
+[permissions]
+files = "Write BlendCap retarget preset JSON files for MMD armatures"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+]
