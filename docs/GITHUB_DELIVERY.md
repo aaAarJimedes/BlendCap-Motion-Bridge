@@ -8,7 +8,7 @@ Use local git and gh with the existing user authentication. Inspect the reposito
 
 ## Releases
 
-This repository currently has no validated downloadable release. Keeping zero releases is valid; do not invent a version or create a release merely to meet a format requirement.
+Version 0.4.0 is the first downloadable release, under tag `v0.4.0`. Its assets are `BlendCap-0.4.0.zip`, `BlendCap-0.4.0.build-manifest.json`, and `BlendCap-0.4.0.sha256`. The build manifest records the exact source commit, package files, and validation boundaries. Preserve this release as the single page until a verified successor incorporates it under the workspace policy. Query the live repository before every maintenance operation.
 
 Put current downloads first, followed by historical versions from newest to oldest. Each historical layer retains its original release notes, version identity, and real downloadable assets. Keep original Git tags for source history. Download and verify the actual bytes before retiring old pages; page titles and catalogs alone do not count as asset migration.
 
