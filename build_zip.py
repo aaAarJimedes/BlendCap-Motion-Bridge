@@ -28,8 +28,8 @@ def _version():
 
 
 def main():
-    workspace = next((p for p in Path(DEV).parents if (p / "Agent Delivery").is_dir() and (p / "Agent Tools").is_dir()), None)
-    delivery = workspace / "Agent Delivery" / "Motion_Bridge" if workspace else Path(DEV)
+    workspace = next((p for p in Path(DEV).parents if (p / "源码").is_dir() and (p / "成果").is_dir()), None)
+    delivery = workspace / "成果" if workspace else Path(DEV)
     delivery.mkdir(parents=True, exist_ok=True)
     archive_name = f"BlendCap-{_version()}.zip" if workspace else f"blendcap_motion_bridge-{_version()}.zip"
     out = str(delivery / archive_name)

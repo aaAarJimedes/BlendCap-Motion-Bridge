@@ -31,9 +31,9 @@ python .\build_zip.py
 
 The build prints `ZIP_OK` followed by the archive's full path:
 
-- In a workspace containing sibling `Agent Delivery` and `Agent Tools`
+- In a maintained project containing sibling `源码` and `成果`
   directories, the package is written to
-  `Agent Delivery/Motion_Bridge/BlendCap-<version>.zip`.
+  `项目/Motion_Bridge/成果/BlendCap-<version>.zip`.
 - In a standalone checkout, the package is written next to `build_zip.py` as
   `blendcap_motion_bridge-<version>.zip`.
 
